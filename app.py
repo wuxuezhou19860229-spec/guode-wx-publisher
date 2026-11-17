@@ -11,6 +11,7 @@
 前提是在「微信云托管控制台 - 云调用 - 微信令牌权限」中已登记下列接口路径：
   /cgi-bin/media/uploadimg
   /cgi-bin/material/add_material
+  /cgi-bin/material/batchget_material
   /cgi-bin/draft/add
   /cgi-bin/freepublish/submit
   /cgi-bin/freepublish/get
@@ -150,6 +151,32 @@ def healthz():
     return jsonify(ok=True, service="wx-cloudrun-publisher", api_base=WX_API_BASE)
 
 
+@APP.get("/materials")
+def materials():
+    """列出图片库（永久图片素材），供挑选封面。"""
+    denied = _require_auth()
+    if denied:
+        return jsonify(ok=False, error=denied), 401
+    offset = int(request.args.get("offset", 0))
+    count = min(int(request.args.get("count", 20)), 100)
+    try:
+        payload = _wx_post(
+            "/cgi-bin/material/batchget_material",
+            raw_body=json.dumps({"type": "image", "offset": offset, "count": count}).encode("utf-8"),
+        )
+    except WxError as exc:
+        return jsonify(ok=False, failed_step=exc.step, detail=exc.payload), 502
+    items = []
+    for it in payload.get("item", []):
+        items.append({
+            "media_id": it.get("media_id"),
+            "name": it.get("name"),
+            "url": it.get("url"),
+            "update_time": it.get("update_time"),
+        })
+    return jsonify(ok=True, total_count=payload.get("total_count"), item_count=payload.get("item_count"), items=items)
+
+
 @APP.post("/publish")
 def publish():
     denied = _require_auth()
@@ -179,17 +206,25 @@ def publish():
         if image_files:
             result["steps"]["inline_images"] = len(image_files)
 
-        # 2. 封面图（缺省时取第一张正文图，仍失败则拒绝，避免草稿无法保存）
-        cover = request.files.get("cover")
-        if cover is not None:
-            thumb_media_id, cover_url = _upload_cover(cover.stream, cover.filename or "cover.jpg")
-            result["steps"]["cover_url"] = cover_url
+        # 2. 封面图（优先用 meta.cover_media_id 指定的图片库既有素材；
+        #    其次用上传的 cover 文件；缺省时取第一张正文图，仍失败则拒绝，避免草稿无法保存）
+        cover_media_id = (meta.get("cover_media_id") or "").strip()
+        if cover_media_id:
+            thumb_media_id = cover_media_id
+            result["steps"]["thumb_media_id"] = thumb_media_id
+            result["steps"]["cover_source"] = "library"
         else:
-            thumb_media_id, cover_url = _upload_cover(
-                _first_inline_image(request), "cover.jpg"
-            )
-            result["steps"]["cover_url"] = cover_url
-        result["steps"]["thumb_media_id"] = thumb_media_id
+            cover = request.files.get("cover")
+            if cover is not None:
+                thumb_media_id, cover_url = _upload_cover(cover.stream, cover.filename or "cover.jpg")
+                result["steps"]["cover_url"] = cover_url
+            else:
+                thumb_media_id, cover_url = _upload_cover(
+                    _first_inline_image(request), "cover.jpg"
+                )
+                result["steps"]["cover_url"] = cover_url
+            result["steps"]["thumb_media_id"] = thumb_media_id
+            result["steps"]["cover_source"] = "upload"
 
         # 3. 建草稿
         article = {
