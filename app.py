@@ -37,7 +37,7 @@ LOG = logging.getLogger("wx-publisher")
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "").strip()
 DEFAULT_AUTHOR = os.environ.get("DEFAULT_AUTHOR", "国德招采数智服务平台")
-WX_API_BASE = os.environ.get("WX_API_BASE", "https://api.weixin.qq.com").rstrip("/")
+WX_API_BASE = os.environ.get("WX_API_BASE", "http://api.weixin.qq.com").rstrip("/")
 HTTP_TIMEOUT = 30
 
 MAX_TITLE = 64
@@ -52,7 +52,12 @@ class WxError(RuntimeError):
 
 
 def _wx_post(path, *, params=None, data=None, files=None, raw_body=None):
-    """调用微信接口。云托管环境下不要携带 access_token。"""
+    """调用微信接口。
+
+    注意：必须走 http。云托管的「开放接口服务」在容器内是本地代理，
+    https 会命中自签名证书导致 CERTIFICATE_VERIFY_FAILED；官方文档也说明
+    云调用"不需使用 HTTPS 协议"。
+    """
     url = WX_API_BASE + path
     headers = {}
     if raw_body is not None:
